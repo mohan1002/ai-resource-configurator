@@ -14,9 +14,11 @@ interface DataGridProps {
   data: any[]
   columns: Column[]
   pageSize?: number
+  editable?: boolean
+  onChange?: (nextData: any[]) => void
 }
 
-export function DataGrid({ data, columns, pageSize = 10 }: DataGridProps) {
+export function DataGrid({ data, columns, pageSize = 10, editable = false, onChange }: DataGridProps) {
   const [sortField, setSortField] = useState('')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
   const [currentPage, setCurrentPage] = useState(1)
@@ -54,6 +56,14 @@ export function DataGrid({ data, columns, pageSize = 10 }: DataGridProps) {
       setSortField(field)
       setSortDirection('asc')
     }
+  }
+
+  const handleEdit = (rowIndex: number, field: string, value: string) => {
+    if (!onChange) return
+    const globalIndex = (currentPage - 1) * pageSize + rowIndex
+    const next = [...data]
+    next[globalIndex] = { ...next[globalIndex], [field]: value }
+    onChange(next)
   }
 
   return (
@@ -99,7 +109,17 @@ export function DataGrid({ data, columns, pageSize = 10 }: DataGridProps) {
               <tr key={index} className="border-b hover:bg-gray-50">
                 {columns.map(column => (
                   <td key={column.field} className="p-4">
-                    {row[column.field]}
+                    {editable ? (
+                      <input
+                        className="border rounded-lg px-3 py-2 bg-gray-50 text-gray-900 w-full"
+                        value={row[column.field] ?? ''}
+                        onChange={(e) => handleEdit(index, column.field, e.target.value)}
+                      />
+                    ) : (
+                      <div className="border rounded-lg px-3 py-2 bg-gray-50 text-gray-900">
+                        {row[column.field]}
+                      </div>
+                    )}
                   </td>
                 ))}
               </tr>

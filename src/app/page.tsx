@@ -1,513 +1,564 @@
-'use client'
+"use client";
 
-import React, { useState, useCallback } from 'react';
-import { 
-  Upload as UploadIcon,
-  Download as DownloadIcon,
-  FileText as FileTextIcon,
-  Settings as SettingsIcon,
-  AlertTriangle as AlertTriangleIcon,
-  ChartColumn as ChartColumnIcon,
-  Grid3x3 as Grid3x3Icon
-} from 'lucide-react';
-import { AIService } from '@/services/ai';
-import { validateClients, validateWorkers, validateTasks } from '@/utils/validation';
-import { ClientData, WorkerData, TaskData, ValidationError, Rule } from '@/types';
-import { CONFIG } from '@/config';
-import * as XLSX from 'xlsx';
-import { AnimatedBackground } from '@/components/ui/animated-background';
-import { FileUpload } from '@/components/ui/file-upload'
-import DarkVeil from '@/components/ui/dark-veil'
-import { DataGrid } from '@/components/ui/data-grid'
+import { useMemo, useState } from "react";
+import Papa from "papaparse";
+import * as XLSX from "xlsx";
+import { saveAs } from "file-saver";
+import { FileUpload } from "@/components/ui/file-upload";
+import { DataGrid } from "@/components/ui/data-grid";
+import { Sparkles, AlertTriangle, SlidersHorizontal } from "lucide-react";
 
 // Types
-interface ClientData {
-  ClientID: string
-  ClientName: string
-  PriorityLevel: number
-  RequestedTaskIDs: string
-  GroupTag: string
-  AttributesJSON: string
+type DatasetType = "clients" | "workers" | "tasks";
+
+type GenericRow = Record<string, any>;
+
+// Sample data to match the screenshot until files are uploaded
+const sampleTasks: GenericRow[] = [
+    {
+        TaskID: "T001",
+        TaskName: "Install Sink",
+        Category: "Plumbing",
+        DurationPhases: 2,
+        RequiredSkills: "carpentry",
+        PreferredPhases: "[1,2]",
+        MaxConcurrent: 1,
+    },
+    {
+        TaskID: "T002",
+        TaskName: "Fix Light",
+        Category: "Electrical",
+        DurationPhases: 1,
+        RequiredSkills: "carpentry",
+        PreferredPhases: "1-3",
+        MaxConcurrent: 1,
+    },
+    {
+        TaskID: "T003",
+        TaskName: "Paint Wall",
+        Category: "Painting",
+        DurationPhases: 3,
+        RequiredSkills: "carpentry",
+        PreferredPhases: "[2,3,4]",
+        MaxConcurrent: 1,
+    },
+];
+
+// Columns for the Tasks grid (visually similar to screenshot)
+const taskColumns = [
+    { field: "TaskID", header: "Task ID", sortable: true, width: "120px" },
+    { field: "TaskName", header: "Task Name", sortable: true, width: "220px" },
+    { field: "Category", header: "Category", sortable: true, width: "160px" },
+    {
+        field: "DurationPhases",
+        header: "Duration (Phases)",
+        sortable: true,
+        width: "160px",
+    },
+    {
+        field: "RequiredSkills",
+        header: "Required Skills",
+        sortable: true,
+        width: "160px",
+    },
+    {
+        field: "PreferredPhases",
+        header: "Preferred Phases",
+        sortable: false,
+        width: "160px"
+    },
+    { field: "MaxConcurrent", header: "Max Concurrent", width: "160px" },
+];
+
+// Parse CSV or XLSX into array of objects
+async function parseFile(file: File): Promise<GenericRow[]> {
+    const ext = file.name.split(".").pop()?.toLowerCase();
+
+    if (ext === "csv") {
+        return new Promise((resolve, reject) => {
+            Papa.parse<GenericRow>(file, {
+                header: true,
+                skipEmptyLines: true,
+                complete: (res) => resolve(res.data as GenericRow[]),
+                error: (err) => reject(err),
+            });
+        });
+    }
+
+    if (ext === "xlsx" || ext === "xls") {
+        const data = await file.arrayBuffer();
+        const workbook = XLSX.read(data, { type: "array" });
+        const firstSheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[firstSheetName];
+        const json = XLSX.utils.sheet_to_json<GenericRow>(sheet, { defval: "" });
+        return json as GenericRow[];
+    }
+
+    // Fallback: try CSV parser
+    return new Promise((resolve, reject) => {
+        Papa.parse<GenericRow>(file, {
+            header: true,
+            skipEmptyLines: true,
+            complete: (res) => resolve(res.data as GenericRow[]),
+            error: (err) => reject(err),
+        });
+    });
 }
 
-interface WorkerData {
-  WorkerID: string
-  WorkerName: string
-  Skills: string
-  AvailableSlots: string
-  MaxLoadPerPhase: number
-  WorkerGroup: string
-  QualificationLevel: number
-}
+// --- Validation Helpers ---
+type ValidationError = {
+  type: string;
+  message: string;
+  entity?: string;
+  rowIndex?: number;
+  field?: string;
+};
 
-interface TaskData {
-  TaskID: string
-  TaskName: string
-  Category: string
-  Duration: number
-  RequiredSkills: string
-  PreferredPhases: string
-  MaxConcurrent: number
-}
+function validateClients(clients: GenericRow[], tasks: GenericRow[]): ValidationError[] {
+  const errors: ValidationError[] = [];
+  const ids = new Set<string>();
+  const taskIDs = new Set(tasks.map((t) => t.TaskID));
+  clients.forEach((row, i) => {
+    // Duplicate IDs
+    if (ids.has(row.ClientID)) {
+      errors.push({ type: "DuplicateID", message: `Duplicate ClientID: ${row.ClientID}`, entity: "clients", rowIndex: i, field: "ClientID" });
+    }
+    ids.add(row.ClientID);
 
-interface ValidationError {
-  type: string
-  message: string
-  row: number
-  column: string
-}
+    // PriorityLevel out of range
+    if (row.PriorityLevel && (row.PriorityLevel < 1 || row.PriorityLevel > 5)) {
+      errors.push({ type: "OutOfRange", message: `PriorityLevel must be 1-5`, entity: "clients", rowIndex: i, field: "PriorityLevel" });
+    }
 
-export default function AIResourceConfigurator() {
-  const [clientsData, setClientsData] = useState<ClientData[]>([])
-  const [workersData, setWorkersData] = useState<WorkerData[]>([])
-  const [tasksData, setTasksData] = useState<TaskData[]>([])
-  const [validationErrors, setValidationErrors] = useState<ValidationError[]>([])
-  const [activeTab, setActiveTab] = useState<'clients' | 'workers' | 'tasks' | 'rules'>('clients')
-  const [rules, setRules] = useState<any[]>([])
-  const [priorities, setPriorities] = useState({
-    priorityLevel: 50,
-    fairness: 30,
-    efficiency: 70,
-    workload: 40
-  })
-  const [searchQuery, setSearchQuery] = useState('')
-  const [filteredData, setFilteredData] = useState<any[]>([])
-  const [isSearching, setIsSearching] = useState(false)
-  const [ruleInput, setRuleInput] = useState('')
-  const [aiValidationResults, setAiValidationResults] = useState<any>(null)
-  const [searchResults, setSearchResults] = useState<any>(null)
-  const [customRules, setCustomRules] = useState<any[]>([])
-  const [isProcessing, setIsProcessing] = useState(false)
-
-  // File upload handler
-  const handleFileUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>, type: 'clients' | 'workers' | 'tasks') => {
-    const file = event.target.files?.[0]
-    if (!file) return
-
-    if (file.name.endsWith('.xlsx')) {
-      // Handle Excel files
-      const reader = new FileReader()
-      reader.onload = async (e) => {
-        const data = new Uint8Array(e.target?.result as ArrayBuffer)
-        const workbook = XLSX.read(data, { type: 'array' })
-        const sheetName = workbook.SheetNames[0]
-        const worksheet = workbook.Sheets[sheetName]
-        const jsonData = XLSX.utils.sheet_to_json(worksheet)
-        
-        // Set data and run validations
-        if (type === 'clients') {
-          setClientsData(jsonData)
-          validateClients(jsonData)
-        } else if (type === 'workers') {
-          setWorkersData(jsonData)
-          validateWorkers(jsonData)
-        } else if (type === 'tasks') {
-          setTasksData(jsonData)
-          validateTasks(jsonData)
+    // RequestedTaskIDs unknown
+    if (row.RequestedTaskIDs) {
+      const requested = String(row.RequestedTaskIDs).split(",").map((x) => x.trim());
+      requested.forEach((tid) => {
+        if (tid && !taskIDs.has(tid)) {
+          errors.push({ type: "UnknownReference", message: `RequestedTaskID ${tid} not found in tasks`, entity: "clients", rowIndex: i, field: "RequestedTaskIDs" });
         }
+      });
+    }
 
-        // Add AI validation
-        await performAIValidation(jsonData, type)
+    // Broken JSON in AttributesJSON
+    if (row.AttributesJSON) {
+      try {
+        JSON.parse(row.AttributesJSON);
+      } catch {
+        errors.push({ type: "BrokenJSON", message: `AttributesJSON is not valid JSON`, entity: "clients", rowIndex: i, field: "AttributesJSON" });
       }
-      reader.readAsArrayBuffer(file)
-    } else {
-      const reader = new FileReader()
-      reader.onload = async (e) => {
-        const text = e.target?.result as string
-        const lines = text.split('\n')
-        const headers = lines[0].split(',').map(h => h.trim())
-        
-        const data = lines.slice(1).filter(line => line.trim()).map((line, index) => {
-          const values = line.split(',').map(v => v.trim())
-          const obj: any = {}
-          headers.forEach((header, i) => {
-            obj[header] = values[i] || ''
-          })
-          return obj
-        })
+    }
+  });
+  return errors;
+}
 
-        // Set data and run validations
-        if (type === 'clients') {
-          setClientsData(data)
-          validateClients(data)
-        } else if (type === 'workers') {
-          setWorkersData(data)
-          validateWorkers(data)
-        } else if (type === 'tasks') {
-          setTasksData(data)
-          validateTasks(data)
+function validateWorkers(workers: GenericRow[]): ValidationError[] {
+  const errors: ValidationError[] = [];
+  const ids = new Set<string>();
+  workers.forEach((row, i) => {
+    // Duplicate IDs
+    if (ids.has(row.WorkerID)) {
+      errors.push({ type: "DuplicateID", message: `Duplicate WorkerID: ${row.WorkerID}`, entity: "workers", rowIndex: i, field: "WorkerID" });
+    }
+    ids.add(row.WorkerID);
+
+    // Malformed AvailableSlots
+    if (row.AvailableSlots) {
+      let slots: number[] = [];
+      try {
+        if (typeof row.AvailableSlots === "string") {
+          slots = JSON.parse(row.AvailableSlots.replace(/'/g, '"'));
+        } else {
+          slots = row.AvailableSlots;
         }
-
-        // Add AI validation
-        await performAIValidation(data, type)
+        if (!Array.isArray(slots) || slots.some((s) => typeof s !== "number")) {
+          throw new Error();
+        }
+      } catch {
+        errors.push({ type: "MalformedList", message: `AvailableSlots must be a numeric array`, entity: "workers", rowIndex: i, field: "AvailableSlots" });
       }
-      reader.readAsText(file)
     }
-  }, [])
 
-  // Basic validations
-  const validateClients = (data: ClientData[]) => {
-    const errors: ValidationError[] = []
-    const ids = new Set()
-    
-    data.forEach((client, index) => {
-      // Check for duplicate IDs
-      if (ids.has(client.ClientID)) {
-        errors.push({
-          type: 'duplicate_id',
-          message: `Duplicate ClientID: ${client.ClientID}`,
-          row: index + 1,
-          column: 'ClientID'
-        })
-      }
-      ids.add(client.ClientID)
-
-      // Check priority level range
-      if (client.PriorityLevel < 1 || client.PriorityLevel > 5) {
-        errors.push({
-          type: 'out_of_range',
-          message: `PriorityLevel must be 1-5, got: ${client.PriorityLevel}`,
-          row: index + 1,
-          column: 'PriorityLevel'
-        })
-      }
-
-      // Check required fields
-      if (!client.ClientID || !client.ClientName) {
-        errors.push({
-          type: 'missing_required',
-          message: 'Missing required ClientID or ClientName',
-          row: index + 1,
-          column: 'ClientID/ClientName'
-        })
-      }
-    })
-    
-    setValidationErrors(prev => [...prev.filter(e => e.type.indexOf('client') === -1), ...errors])
-  }
-
-  const validateWorkers = (data: WorkerData[]) => {
-    const errors: ValidationError[] = []
-    const ids = new Set()
-    
-    data.forEach((worker, index) => {
-      if (ids.has(worker.WorkerID)) {
-        errors.push({
-          type: 'duplicate_id',
-          message: `Duplicate WorkerID: ${worker.WorkerID}`,
-          row: index + 1,
-          column: 'WorkerID'
-        })
-      }
-      ids.add(worker.WorkerID)
-
-      if (!worker.WorkerID || !worker.WorkerName) {
-        errors.push({
-          type: 'missing_required',
-          message: 'Missing required WorkerID or WorkerName',
-          row: index + 1,
-          column: 'WorkerID/WorkerName'
-        })
-      }
-
-      if (worker.MaxLoadPerPhase < 1) {
-        errors.push({
-          type: 'out_of_range',
-          message: 'MaxLoadPerPhase must be >= 1',
-          row: index + 1,
-          column: 'MaxLoadPerPhase'
-        })
-      }
-    })
-    
-    setValidationErrors(prev => [...prev.filter(e => e.type.indexOf('worker') === -1), ...errors])
-  }
-
-  const validateTasks = (data: TaskData[]) => {
-    const errors: ValidationError[] = []
-    const ids = new Set()
-    
-    data.forEach((task, index) => {
-      if (ids.has(task.TaskID)) {
-        errors.push({
-          type: 'duplicate_id',
-          message: `Duplicate TaskID: ${task.TaskID}`,
-          row: index + 1,
-          column: 'TaskID'
-        })
-      }
-      ids.add(task.TaskID)
-
-      if (task.Duration < 1) {
-        errors.push({
-          type: 'out_of_range',
-          message: 'Duration must be >= 1',
-          row: index + 1,
-          column: 'Duration'
-        })
-      }
-
-      if (!task.TaskID || !task.TaskName) {
-        errors.push({
-          type: 'missing_required',
-          message: 'Missing required TaskID or TaskName',
-          row: index + 1,
-          column: 'TaskID/TaskName'
-        })
-      }
-    })
-    
-    setValidationErrors(prev => [...prev.filter(e => e.type.indexOf('task') === -1), ...errors])
-  }
-
-  // AI validation
-  const performAIValidation = async (data: any, type: 'clients' | 'workers' | 'tasks') => {
-    try {
-      const aiValidation = await AIService.validateWithAI(data, type)
-      
-      if (!aiValidation.isValid) {
-        setValidationErrors(prev => [
-          ...prev,
-          ...aiValidation.errors.map(error => ({
-            type: `ai_${error.type}`,
-            message: error.message,
-            row: -1, // AI validation might not always map to specific rows
-            column: 'AI Validation',
-            suggestion: error.suggestion
-          }))
-        ])
-      }
-    } catch (error) {
-      console.error('AI Validation failed:', error)
+    // MaxLoadPerPhase missing or not a number
+    if (row.MaxLoadPerPhase && isNaN(Number(row.MaxLoadPerPhase))) {
+      errors.push({ type: "MalformedValue", message: `MaxLoadPerPhase must be a number`, entity: "workers", rowIndex: i, field: "MaxLoadPerPhase" });
     }
-  }
+  });
+  return errors;
+}
 
-  // Natural language search
-  const handleNaturalLanguageSearch = async (query: string) => {
-    setIsProcessing(true)
-    try {
-      const results = await AIService.processNaturalLanguageQuery(query, 
-        activeTab === 'clients' ? clientsData :
-        activeTab === 'workers' ? workersData :
-        tasksData
-      )
-      setSearchResults(results)
-    } finally {
-      setIsProcessing(false)
+function validateTasks(tasks: GenericRow[], workers: GenericRow[]): ValidationError[] {
+  const errors: ValidationError[] = [];
+  const ids = new Set<string>();
+  const workerSkills = new Set(
+    workers.flatMap((w) => String(w.Skills || "").split(",").map((s) => s.trim()))
+  );
+  tasks.forEach((row, i) => {
+    // Duplicate IDs
+    if (ids.has(row.TaskID)) {
+      errors.push({ type: "DuplicateID", message: `Duplicate TaskID: ${row.TaskID}`, entity: "tasks", rowIndex: i, field: "TaskID" });
     }
-  }
+    ids.add(row.TaskID);
 
-  // Add rule functionality
-  const addRule = (type: string, data: any) => {
-    const newRule = { id: Date.now(), type, ...data }
-    setRules(prev => [...prev, newRule])
-  }
-
-  // Export functionality
-  const exportData = () => {
-    const exportPackage = {
-      clients: clientsData,
-      workers: workersData,
-      tasks: tasksData,
-      rules: rules,
-      priorities: priorities
+    // Duration < 1
+    if (row.DurationPhases && Number(row.DurationPhases) < 1) {
+      errors.push({ type: "OutOfRange", message: `DurationPhases must be >= 1`, entity: "tasks", rowIndex: i, field: "DurationPhases" });
     }
-    
-    const blob = new Blob([JSON.stringify(exportPackage, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'resource-configuration.json'
-    a.click()
-  }
 
-  const handleAIOperation = async (action: string, data: any) => {
-    try {
-      const response = await fetch('/api/ai', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ action, data }),
+    // RequiredSkills not covered by any worker
+    if (row.RequiredSkills) {
+      const required = String(row.RequiredSkills).split(",").map((x) => x.trim());
+      required.forEach((skill) => {
+        if (skill && !workerSkills.has(skill)) {
+          errors.push({ type: "SkillCoverage", message: `RequiredSkill ${skill} not found in any worker`, entity: "tasks", rowIndex: i, field: "RequiredSkills" });
+        }
       });
+    }
 
-      if (!response.ok) {
-        throw new Error('AI operation failed');
+    // PreferredPhases malformed
+    if (row.PreferredPhases) {
+      const val = String(row.PreferredPhases);
+      let valid = false;
+      if (/^\[\d+(,\d+)*\]$/.test(val)) valid = true;
+      if (/^\d+-\d+$/.test(val)) valid = true;
+      if (!valid) {
+        errors.push({ type: "MalformedList", message: `PreferredPhases must be a list [1,2] or range 1-3`, entity: "tasks", rowIndex: i, field: "PreferredPhases" });
       }
-
-      const result = await response.json();
-      return result;
-    } catch (error) {
-      console.error('AI operation error:', error);
-      throw error;
     }
-  };
 
-  // Update your existing AI handlers to use handleAIOperation
-  const handleSearch = async (query: string) => {
-    setIsProcessing(true);
-    try {
-      const result = await handleAIOperation('search', {
-        query,
-        content: activeTab === 'clients' ? clientsData : 
-                 activeTab === 'workers' ? workersData : tasksData
-      });
-      setSearchResults(result.result);
-    } finally {
-      setIsProcessing(false);
+    // MaxConcurrent missing or not a number
+    if (row.MaxConcurrent && isNaN(Number(row.MaxConcurrent))) {
+      errors.push({ type: "MalformedValue", message: `MaxConcurrent must be a number`, entity: "tasks", rowIndex: i, field: "MaxConcurrent" });
     }
-  };
+  });
+  return errors;
+}
 
-  const columns = {
-    clients: [
-      { field: 'ClientID', header: 'Client ID', sortable: true },
-      { field: 'ClientName', header: 'Client Name', sortable: true },
-      { field: 'PriorityLevel', header: 'Priority Level', sortable: true },
-      { field: 'GroupTag', header: 'Group Tag', sortable: true }
-    ],
-    workers: [
-      { field: 'WorkerID', header: 'Worker ID', sortable: true },
-      { field: 'WorkerName', header: 'Worker Name', sortable: true },
-      { field: 'Skills', header: 'Skills', sortable: true },
-      { field: 'WorkerGroup', header: 'Group', sortable: true }
-    ],
-    tasks: [
-      { field: 'TaskID', header: 'Task ID', sortable: true },
-      { field: 'TaskName', header: 'Task Name', sortable: true },
-      { field: 'Category', header: 'Category', sortable: true },
-      { field: 'Duration', header: 'Duration', sortable: true },
-      { field: 'RequiredSkills', header: 'Required Skills', sortable: true }
-    ]
-  }
+// --- Main Component ---
+export default function Home() {
+    // Uploaded/parsed datasets
+    const [clients, setClients] = useState<GenericRow[] | null>(null);
+    const [workers, setWorkers] = useState<GenericRow[] | null>(null);
+    const [tasks, setTasks] = useState<GenericRow[] | null>(null);
 
-  const tabs = [
-    { id: 'upload', icon: <UploadIcon className="w-4 h-4" />, label: 'Upload' },
-    { id: 'grid', icon: <Grid3x3Icon className="w-4 h-4" />, label: 'Data Grid' },
-    { id: 'validation', icon: <AlertTriangleIcon className="w-4 h-4" />, label: 'Validation' },
-    { id: 'rules', icon: <SettingsIcon className="w-4 h-4" />, label: 'Rules' },
-    { id: 'priority', icon: <ChartColumnIcon className="w-4 h-4" />, label: 'Priority' },
-    { id: 'export', icon: <DownloadIcon className="w-4 h-4" />, label: 'Export' }
-  ]
+    // UI state
+    const [activeTab, setActiveTab] = useState<DatasetType>("tasks");
+    const [aiModifier, setAiModifier] = useState("");
+    const [error, setError] = useState<string | null>(null);
+    const [prioritizationWeight, setPrioritizationWeight] = useState(50); // Default to 50%
 
-  return (
-    <>
-      <AnimatedBackground />
-      <DarkVeil />
-      <main className="relative min-h-screen z-10">
-        <div className="container mx-auto p-6 space-y-6">
-          {/* Header Section */}
-          <div className="text-center space-y-2">
-            <h1 className="text-3xl font-bold">Data Validation & Processing App</h1>
-            <p className="text-muted-foreground">Upload, validate, and process your CSV/XLSX data with custom rules</p>
-          </div>
+    // --- Advanced Validation State ---
+    const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
 
-          {/* File Upload Section */}
-          <div className="bg-white rounded-lg border shadow-sm">
-            <div className="p-6 border-b">
-              <h2 className="text-xl font-semibold">File Upload & Parser</h2>
-              <p className="text-sm text-muted-foreground">Upload your CSV or XLSX files for clients, workers, and tasks</p>
-            </div>
-            
-            <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
-              {[
-                { title: 'Clients Data', type: 'clients' },
-                { title: 'Workers Data', type: 'workers' },
-                { title: 'Tasks Data', type: 'tasks' }
-              ].map(({ title, type }) => (
-                <div key={type} className="bg-white rounded-lg border">
-                  <div className="p-4 border-b">
-                    <div className="flex items-center gap-2">
-                      <FileTextIcon className="w-5 h-5" />
-                      <h3 className="font-semibold">{title}</h3>
+    const activeData: GenericRow[] = useMemo(() => {
+        if (activeTab === "clients") return clients ?? [];
+        if (activeTab === "workers") return workers ?? [];
+        return tasks ?? sampleTasks; // default to sample tasks for nice first render
+    }, [activeTab, clients, workers, tasks]);
+
+    const dynamicColumns = useMemo(() => {
+        if (activeTab === "tasks") return taskColumns;
+        // Generate columns from dataset keys for Clients/Workers
+        const first = activeData[0];
+        if (!first) return [] as any[];
+        return Object.keys(first).map((k) => ({
+            field: k,
+            header: k,
+            sortable: true,
+        }));
+    }, [activeTab, activeData]);
+
+    // Basic header validation by type
+    const requiredHeaders: Record<DatasetType, string[]> = {
+        clients: ["ClientID"],
+        workers: ["WorkerID"],
+        tasks: ["TaskID", "TaskName"],
+    };
+
+    // Upload handlers
+    const handleUpload = async (type: DatasetType, file: File) => {
+        try {
+            const rows = await parseFile(file);
+            const headers = rows.length ? Object.keys(rows[0]) : [];
+            const missing = requiredHeaders[type].filter((h) => !headers.includes(h));
+            if (missing.length) {
+                setError(`${type} file missing required headers: ${missing.join(", ")}`);
+                return;
+            }
+            setError(null);
+            if (type === "clients") setClients(rows);
+            if (type === "workers") setWorkers(rows);
+            if (type === "tasks") setTasks(rows);
+        } catch (e) {
+            console.error("Failed to parse file", e);
+            setError("Failed to parse file. Please ensure it's a valid CSV/XLSX.");
+        }
+    };
+
+    // Run validations whenever data changes
+    useMemo(() => {
+        let errors: ValidationError[] = [];
+        if (clients) errors = errors.concat(validateClients(clients, tasks ?? []));
+        if (workers) errors = errors.concat(validateWorkers(workers));
+        if (tasks) errors = errors.concat(validateTasks(tasks, workers ?? []));
+        setValidationErrors(errors);
+    }, [clients, workers, tasks]);
+
+    const handleExportRules = () => {
+        const rules = {
+            prioritization: {
+                clientPriority: 100 - prioritizationWeight,
+                taskEfficiency: prioritizationWeight,
+            },
+            // Future rules can be added here
+        };
+        const blob = new Blob([JSON.stringify(rules, null, 2)], { type: "application/json;charset=utf-8;" });
+        saveAs(blob, "rules.json");
+    };
+
+    return (
+        <div className="min-h-screen bg-slate-50 font-sans p-8">
+            <div className="max-w-7xl mx-auto space-y-8">
+                {/* Header */}
+                <header>
+                    <h1 className="text-3xl font-bold text-slate-800">
+                        AI Data 🚀 Data Alchemist Configurator
+                    </h1>
+                </header>
+
+                {/* Upload row (1,2,3) */}
+                <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="bg-white rounded-xl shadow-md p-6">
+                        <h2 className="font-semibold text-slate-800 mb-4">1. Upload Clients</h2>
+                        <FileUpload
+                            type="clients"
+                            accept=".csv,.xlsx"
+                            onUpload={(file) => handleUpload("clients", file)}
+                        />
                     </div>
-                  </div>
-                  <div className="p-4">
-                    <FileUpload
-                      type={type as 'clients' | 'workers' | 'tasks'}
-                      onUpload={(file) => handleUpload(file, type as 'clients' | 'workers' | 'tasks')}
-                      accept=".csv,.xlsx"
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+                    <div className="bg-white rounded-xl shadow-md p-6">
+                        <h2 className="font-semibold text-slate-800 mb-4">2. Upload Workers</h2>
+                        <FileUpload
+                            type="workers"
+                            accept=".csv,.xlsx"
+                            onUpload={(file) => handleUpload("workers", file)}
+                        />
+                    </div>
+                    <div className="bg-white rounded-xl shadow-md p-6">
+                        <h2 className="font-semibold text-slate-800 mb-4">3. Upload Tasks</h2>
+                        <FileUpload
+                            type="tasks"
+                            accept=".csv,.xlsx"
+                            onUpload={(file) => handleUpload("tasks", file)}
+                        />
+                    </div>
+                </section>
 
-          {/* Tabs with correct spacing */}
-          <div className="max-w-7xl mx-auto mb-6">
-            <div dir="ltr" data-orientation="horizontal" className="w-full">
-              <div role="tablist" className="h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground grid w-full grid-cols-6">
-                {tabs.map((tab) => (
-                  <button
-                    key={tab.id}
-                    onClick={() => setActiveTab(tab.id)}
-                    className={`justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm flex items-center gap-2 ${
-                      activeTab === tab.id ? 'data-[state=active]' : ''
-                    }`}
-                  >
-                    {tab.icon}
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
+                {/* Tabs and Data Grid Section */}
+                <section>
+                    <div className="flex items-center justify-between mb-4">
+                        <div className="inline-flex bg-slate-200/80 rounded-lg p-1">
+                            {["clients", "workers", "tasks"].map((tab) => (
+                                <button
+                                    key={tab}
+                                    onClick={() => setActiveTab(tab as DatasetType)}
+                                    className={`px-4 py-1.5 rounded-md text-sm font-semibold transition-all duration-200 ${
+                                        activeTab === tab
+                                            ? "bg-white text-slate-800 shadow-sm"
+                                            : "text-slate-600 hover:bg-slate-300/50"
+                                    }`}
+                                >
+                                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="flex gap-3">
+                            <button
+                                className="px-4 py-2 rounded-lg text-sm font-semibold border bg-white hover:bg-slate-50 text-slate-700"
+                                onClick={() => {
+                                    const csv = Papa.unparse(activeData || []);
+                                    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+                                    saveAs(blob, `${activeTab}.csv`);
+                                }}
+                            >
+                                Export CSV
+                            </button>
+                            <button
+                                className="px-4 py-2 rounded-lg text-sm font-semibold border bg-white hover:bg-slate-50 text-slate-700"
+                                onClick={() => {
+                                    const ws = XLSX.utils.json_to_sheet(activeData || []);
+                                    const wb = XLSX.utils.book_new();
+                                    XLSX.utils.book_append_sheet(wb, ws, activeTab);
+                                    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+                                    const blob = new Blob([wbout], { type: "application/octet-stream" });
+                                    saveAs(blob, `${activeTab}.xlsx`);
+                                }}
+                            >
+                                Export XLSX
+                            </button>
+                            <button
+                                className="px-4 py-2 rounded-lg text-sm font-semibold border bg-blue-600 hover:bg-blue-700 text-white"
+                                onClick={handleExportRules}
+                            >
+                                Export Rules
+                            </button>
+                        </div>
+                    </div>
+                    
+                    {/* Data Grid - Note: Styling the grid cells requires changes in the DataGrid component itself. */}
+                    <div className="bg-white rounded-xl shadow-md p-2">
+                        <DataGrid
+                            data={activeData}
+                            columns={dynamicColumns as any}
+                            pageSize={5}
+                            editable
+                            onChange={(next) => {
+                                if (activeTab === "clients") setClients(next);
+                                if (activeTab === "workers") setWorkers(next);
+                                if (activeTab === "tasks") setTasks(next);
+                            }}
+                        />
+                    </div>
+                </section>
 
-          {/* AI Data Modifier with correct spacing */}
-          <div className="max-w-7xl mx-auto data-modifier">
-            <div className="flex items-center gap-2 mb-4">
-              <span>✨</span>
-              <h3 className="text-lg font-semibold">AI Data Modifier</h3>
-            </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="e.g., Set PriorityLevel to 5 for clients in the 'Premium' group"
-                className="flex-1 p-2 border rounded-lg"
-                onKeyDown={(e) => e.key === 'Enter' && handleNaturalLanguageSearch(e.currentTarget.value)}
-              />
-              <button className="px-4 py-2 bg-black text-white rounded-lg">
-                Generate Fix
-              </button>
-            </div>
-            {isProcessing && <div className="text-blue-500">Processing...</div>}
-            {searchResults && (
-              <div className="mt-4 p-4 bg-gray-50 rounded">
-                <pre>{JSON.stringify(searchResults, null, 2)}</pre>
-              </div>
-            )}
-          </div>
+                {/* AI Data Modifier */}
+                <section className="bg-white rounded-xl shadow-md p-6">
+                    <div className="flex items-center gap-2 text-slate-800 font-semibold mb-2">
+                        <Sparkles className="h-5 w-5 text-yellow-500" />
+                        AI Data Modifier
+                    </div>
+                    <p className="text-slate-500 text-sm mb-4">
+                        Describe the changes you want to make in plain English.
+                    </p>
+                    <div className="flex gap-4">
+                        <input
+                            className="flex-1 bg-slate-100 border border-slate-200 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                            placeholder="e.g., Set PriorityLevel to 5 for clients in the 'Premium' group"
+                            value={aiModifier}
+                            onChange={(e) => setAiModifier(e.target.value)}
+                        />
+                        <button
+                            className="whitespace-nowrap px-6 py-2 rounded-lg bg-slate-900 text-white font-semibold hover:bg-slate-800 transition-colors"
+                            onClick={async () => {
+                                try {
+                                    const payload = {
+                                        action: "validate",
+                                        data: { type: activeTab, content: activeData, modifier: aiModifier },
+                                    };
+                                    const res = await fetch("/api/ai", {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify(payload),
+                                    });
+                                    const json = await res.json();
+                                    if (!res.ok) throw new Error(json.error || "AI error");
+                                    alert(json.result || "No result returned");
+                                } catch (err: any) {
+                                    alert("AI request failed: " + (err?.message || "Unknown error"));
+                                }
+                            }}
+                        >
+                            Generate Fix
+                        </button>
+                    </div>
+                </section>
 
-          {/* Data Table with proper spacing */}
-          <div className="max-w-7xl mx-auto overflow-x-auto bg-white rounded-lg border border-gray-200">
-            {activeTab === 'grid' && (
-              <div className="space-y-6">
-                <DataGrid
-                  data={
-                    activeTab === 'clients' ? clientsData :
-                    activeTab === 'workers' ? workersData :
-                    tasksData
-                  }
-                  columns={columns[activeTab as keyof typeof columns]}
-                  pageSize={10}
-                />
-              </div>
-            )}
-          </div>
+                {/* Prioritization & Weights Section */}
+                <section className="bg-white rounded-xl shadow-md p-6">
+                    <div className="flex items-center gap-2 text-slate-800 font-semibold mb-2">
+                        <SlidersHorizontal className="h-5 w-5 text-blue-500" />
+                        Prioritization & Weights
+                    </div>
+                    <p className="text-slate-500 text-sm mb-4">
+                        Adjust the weight between client priority and task efficiency.
+                    </p>
+                    <div className="flex items-center gap-4">
+                        <span className="text-sm font-medium text-slate-600">Client Priority</span>
+                        <input
+                            type="range"
+                            min="0"
+                            max="100"
+                            value={prioritizationWeight}
+                            onChange={(e) => setPrioritizationWeight(Number(e.target.value))}
+                            className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                        />
+                        <span className="text-sm font-medium text-slate-600">Task Efficiency</span>
+                    </div>
+                    <div className="text-center text-sm text-slate-500 mt-2">
+                        Weight: {100 - prioritizationWeight}% Client Priority / {prioritizationWeight}% Task Efficiency
+                    </div>
+                </section>
 
-          {/* Export section with correct spacing */}
-          <div className="max-w-7xl mx-auto mt-8">
-            <div className="bg-white rounded-lg border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold mb-2">Export Configuration</h3>
-              <p className="text-gray-600 mb-4">Download your cleaned data and rules</p>
-              <button className="flex items-center gap-2 px-4 py-2 border rounded-lg hover:bg-gray-50">
-                <DownloadIcon className="w-4 h-4" />
-                Export All
-              </button>
+                {/* Error banner */}
+                {error && (
+                    <div className="p-4 border border-red-300 bg-red-100 text-red-800 rounded-lg flex items-center gap-3">
+                        <AlertTriangle className="h-5 w-5" />
+                        <span className="font-medium">{error}</span>
+                    </div>
+                )}
+
+                {/* --- Validator Summary Panel --- */}
+                {validationErrors.length > 0 && (
+                    <section className="bg-white rounded-xl shadow-md p-6">
+                        <div className="flex items-center gap-2 text-slate-800 font-semibold mb-3">
+                            <AlertTriangle className="h-5 w-5 text-red-500" />
+                            Validator Summary
+                        </div>
+                        <ul className="list-disc pl-5 space-y-1.5 text-sm">
+                            {validationErrors.map((err, idx) => (
+                                <li key={idx} className="text-red-700">
+                                    <span className="font-semibold">{err.entity?.toUpperCase()} Row {err.rowIndex !== undefined ? err.rowIndex + 1 : ""}:</span>{" "}
+                                    <span>{err.message}</span>
+                                    {err.field && <span className="ml-2 text-xs font-mono bg-red-100 px-1 py-0.5 rounded">[{err.field}]</span>}
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+                )}
+
+                {/* Create Rule with AI */}
+                <section className="bg-white rounded-xl shadow-md p-6">
+                    <div className="flex items-center gap-2 text-slate-800 font-semibold mb-2">
+                        <Sparkles className="h-5 w-5 text-yellow-500" />
+                        Create Rule with AI
+                    </div>
+                     <p className="text-slate-500 text-sm mb-4">
+                        Describe the rule in a single sentence.
+                    </p>
+                    <div className="flex gap-4">
+                        <input
+                            className="flex-1 bg-slate-100 border border-slate-200 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                            placeholder="e.g., The engineering group can only handle 10 slots per phase"
+                            id="rule-input"
+                        />
+                        <button
+                            className="whitespace-nowrap px-6 py-2 rounded-lg bg-slate-900 text-white font-semibold hover:bg-slate-800 transition-colors"
+                            onClick={async () => {
+                                const input = document.getElementById("rule-input") as HTMLInputElement;
+                                const ruleText = input?.value || "";
+                                if (!ruleText) return alert("Please enter a rule");
+                                try {
+                                    const res = await fetch("/api/ai", {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({
+                                            action: "search",
+                                            data: { query: ruleText, content: activeData },
+                                        }),
+                                    });
+                                    const json = await res.json();
+                                    if (!res.ok) throw new Error(json.error || "Rule error");
+                                    alert("Rule suggestion: " + (json.result || "No suggestion"));
+                                } catch (e: any) {
+                                    alert("Rule request failed: " + (e?.message || "Unknown error"));
+                                }
+                            }}
+                        >
+                            Create
+                        </button>
+                    </div>
+                </section>
             </div>
-          </div>
         </div>
-      </main>
-    </>
-  )
+    );
 }

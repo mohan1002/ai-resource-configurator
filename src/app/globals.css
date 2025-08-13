@@ -2,85 +2,138 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Add base styles for consistent rendering */
+@layer base {
+  body {
+    @apply bg-gray-50 text-gray-900;
+  }
+
+  /* Reset default styles for common elements */
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-bold;
+  }
+
+  ul, ol {
+    @apply list-none;
+  }
+
+  a {
+    @apply text-blue-500 hover:text-blue-700;
+  }
+}
+
 :root {
-  --background: 0 0% 100%;
-  --foreground: 222.2 84% 4.9%;
-  --card: 0 0% 100%;
-  --card-foreground: 222.2 84% 4.9%;
-  --muted: 210 40% 96.1%;
-  --muted-foreground: 215.4 16.3% 46.9%;
+  --background: #f8fafc;
+  --foreground: #1a202c;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --accent: #3b82f6;
 }
 
-body {
-  @apply bg-[#fafafa];
+@layer components {
+  .container {
+    @apply max-w-7xl mx-auto px-4 py-10 space-y-8;
+  }
+
+  .header {
+    @apply text-center space-y-2;
+  }
+
+  .header h1 {
+    @apply text-4xl font-bold text-foreground;
+  }
+
+  .header p {
+    @apply text-lg text-muted;
+  }
+
+  .nav-tabs {
+    @apply flex justify-center gap-0 mb-12 bg-white rounded-xl p-2 shadow-sm border border-border;
+  }
+
+  .nav-tab {
+    @apply flex items-center gap-2 px-5 py-3 rounded-lg text-sm font-medium text-muted
+           transition-all hover:bg-gray-50 hover:text-gray-900;
+  }
+
+  .nav-tab.active {
+    @apply bg-accent text-white;
+  }
+
+  .section-header {
+    @apply mb-8;
+  }
+
+  .section-header h2 {
+    @apply text-2xl font-bold text-foreground mb-2;
+  }
+
+  .section-header p {
+    @apply text-muted;
+  }
+
+  .upload-grid {
+    @apply grid grid-cols-1 md:grid-cols-3 gap-6;
+  }
+
+  .upload-card {
+    @apply bg-white border border-border rounded-xl p-6 shadow-sm;
+  }
+
+  .upload-area {
+    @apply border-2 border-dashed border-gray-200 rounded-lg p-8 text-center
+           hover:border-accent hover:bg-blue-50 transition-all cursor-pointer;
+  }
+
+  .upload-area.dragover {
+    @apply border-accent bg-blue-50 scale-[1.02];
+  }
+
+  .file-input {
+    @apply hidden;
+  }
+
+  /* Styles for ValidationSummary component */
+  .validation-summary {
+    @apply bg-white rounded-lg border border-gray-200 p-4 mb-4;
+  }
+
+  .validation-summary-title {
+    @apply text-lg font-semibold mb-2;
+  }
+
+  .validation-summary-list {
+    @apply list-disc pl-5;
+  }
+
+  .validation-summary-item {
+    @apply text-red-500;
+  }
+
+  /* Styles for RuleInputUI component */
+  .rule-input-ui {
+    @apply bg-white rounded-lg border border-gray-200 p-4 mb-4;
+  }
+
+  .rule-input-ui-title {
+    @apply text-lg font-semibold mb-2;
+  }
+
+  .rule-input-ui-input {
+    @apply w-full border border-gray-300 rounded-lg p-2;
+  }
+
+  /* Styles for PrioritizationUI component */
+  .prioritization-ui {
+    @apply bg-white rounded-lg border border-gray-200 p-4 mb-4;
+  }
+
+  .prioritization-ui-title {
+    @apply text-lg font-semibold mb-2;
+  }
+
+  .prioritization-ui-slider {
+    @apply w-full;
+  }
 }
 
-.bg-grid-slate-200 {
-  background-image: 
-    linear-gradient(to right, var(--dot-color) var(--dot-size), transparent var(--dot-size)),
-    linear-gradient(to bottom, var(--dot-color) var(--dot-size), transparent var(--dot-size));
-  background-size: var(--grid-size) var(--grid-size);
-}
-
-.upload-container {
-  @apply grid grid-cols-1 md:grid-cols-3 gap-6 mb-8;
-}
-
-.upload-box {
-  @apply bg-white rounded-lg border border-gray-200 p-6;
-}
-
-.upload-title {
-  @apply text-lg font-semibold mb-4;
-}
-
-.file-input-area {
-  @apply border-2 border-dashed border-gray-200 rounded-lg p-4 text-center cursor-pointer;
-}
-
-.tab-button {
-  @apply px-4 py-2 text-sm font-medium;
-}
-
-.tab-button.active {
-  @apply border-b-2 border-black;
-}
-
-.data-modifier {
-  @apply bg-white rounded-lg border border-gray-200 p-6 mb-6;
-}
-
-.data-table {
-  @apply w-full;
-}
-
-.data-table th {
-  @apply text-left p-4 text-sm font-medium text-gray-500 border-b;
-}
-
-.data-table td {
-  @apply p-4 text-sm border-b;
-}
-
-.file-upload-area {
-  @apply border-2 border-dashed border-gray-200 rounded-lg p-6 text-center 
-         hover:border-gray-400 transition-colors cursor-pointer;
-}
-
-.data-grid-header {
-  @apply bg-gray-50 p-4 text-left text-sm font-medium text-gray-500;
-}
-
-.data-grid-cell {
-  @apply p-4 text-sm text-gray-900;
-}
-
-.data-grid-row {
-  @apply border-b hover:bg-gray-50 transition-colors;
-}
-
-.pagination-button {
-  @apply px-3 py-1 border rounded-lg disabled:opacity-50 hover:bg-gray-50 
-         transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 
-         focus:ring-blue-500;
-}
